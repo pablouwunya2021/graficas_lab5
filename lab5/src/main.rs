@@ -1,907 +1,851 @@
-use nalgebra_glm::{Vec2, Vec3, Vec4, Mat4};
-use minifb::{Key, Window, WindowOptions};
-use std::f32::consts::PI;
+// =============================================================================
+// Sistema Solar Interactivo con Renderizado GPU - VERSIÓN UNIFICADA
+// Autor: Pablo Cabrera
+// Carné: 231156
+// Descripción: Todos los módulos concentrados en un solo archivo
+// =============================================================================
 
-const WIDTH: usize = 800;
-const HEIGHT: usize = 600;
+use wgpu::util::DeviceExt;
+use winit::{
+    event::*,
+    event_loop::EventLoop,
+    keyboard::{KeyCode, PhysicalKey},
+    window::Window,
+};
+use std::sync::Arc;
+use nalgebra_glm::{Vec3, Vec4, Mat4};
+use std::fmt;
 
-// Estructura para representar un color
+// =============================================================================
+// MÓDULO: COLOR
+// =============================================================================
+
+/// Estructura para representar colores en formato RGB (0-255)
 #[derive(Debug, Clone, Copy)]
-struct Color {
-    r: u8,
-    g: u8,
-    b: u8,
+pub struct ColorRGB {
+    pub rojo: u8,
+    pub verde: u8,
+    pub azul: u8,
 }
 
-impl Color {
-    fn new(r: u8, g: u8, b: u8) -> Self {
-        Color { r, g, b }
+impl ColorRGB {
+    pub fn nuevo(r: u8, g: u8, b: u8) -> Self {
+        ColorRGB { rojo: r, verde: g, azul: b }
     }
 
-    fn black() -> Self {
-        Color::new(0, 0, 0)
-    }
-
-    fn to_u32(&self) -> u32 {
-        ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
-    }
-
-    fn lerp(&self, other: &Color, t: f32) -> Color {
-        Color::new(
-            (self.r as f32 * (1.0 - t) + other.r as f32 * t) as u8,
-            (self.g as f32 * (1.0 - t) + other.g as f32 * t) as u8,
-            (self.b as f32 * (1.0 - t) + other.b as f32 * t) as u8,
-        )
-    }
-
-    fn mul(&self, factor: f32) -> Color {
-        Color::new(
-            (self.r as f32 * factor).min(255.0) as u8,
-            (self.g as f32 * factor).min(255.0) as u8,
-            (self.b as f32 * factor).min(255.0) as u8,
-        )
-    }
-
-    fn add(&self, other: &Color) -> Color {
-        Color::new(
-            (self.r as u16 + other.r as u16).min(255) as u8,
-            (self.g as u16 + other.g as u16).min(255) as u8,
-            (self.b as u16 + other.b as u16).min(255) as u8,
-        )
-    }
-}
-
-// Estructura para un fragmento
-struct Fragment {
-    position: Vec3,
-    normal: Vec3,
-    intensity: f32,
-    vertex_position: Vec3,
-}
-
-// Estructura para vértices
-struct Vertex {
-    position: Vec3,
-    normal: Vec3,
-}
-
-// Framebuffer
-struct Framebuffer {
-    buffer: Vec<u32>,
-    zbuffer: Vec<f32>,
-    width: usize,
-    height: usize,
-}
-
-impl Framebuffer {
-    fn new(width: usize, height: usize) -> Self {
-        Framebuffer {
-            buffer: vec![0; width * height],
-            zbuffer: vec![f32::INFINITY; width * height],
-            width,
-            height,
+    pub fn desde_flotante(r: f32, g: f32, b: f32) -> Self {
+        ColorRGB {
+            rojo: (r.clamp(0.0, 1.0) * 255.0) as u8,
+            verde: (g.clamp(0.0, 1.0) * 255.0) as u8,
+            azul: (b.clamp(0.0, 1.0) * 255.0) as u8,
         }
     }
 
-    fn clear(&mut self, color: Color) {
-        let color_u32 = color.to_u32();
-        for pixel in self.buffer.iter_mut() {
-            *pixel = color_u32;
+    pub fn a_hexadecimal(&self) -> u32 {
+        ((self.rojo as u32) << 16) | ((self.verde as u32) << 8) | (self.azul as u32)
+    }
+
+    pub fn interpolar(&self, otro_color: &ColorRGB, factor: f32) -> ColorRGB {
+        let t = factor.clamp(0.0, 1.0);
+        ColorRGB::nuevo(
+            (self.rojo as f32 * (1.0 - t) + otro_color.rojo as f32 * t) as u8,
+            (self.verde as f32 * (1.0 - t) + otro_color.verde as f32 * t) as u8,
+            (self.azul as f32 * (1.0 - t) + otro_color.azul as f32 * t) as u8,
+        )
+    }
+
+    pub fn multiplicar(&self, escalar: f32) -> ColorRGB {
+        ColorRGB::desde_flotante(
+            self.rojo as f32 / 255.0 * escalar,
+            self.verde as f32 / 255.0 * escalar,
+            self.azul as f32 / 255.0 * escalar,
+        )
+    }
+
+    pub fn sumar(&self, otro_color: &ColorRGB) -> ColorRGB {
+        ColorRGB::desde_flotante(
+            (self.rojo as f32 + otro_color.rojo as f32) / 255.0,
+            (self.verde as f32 + otro_color.verde as f32) / 255.0,
+            (self.azul as f32 + otro_color.azul as f32) / 255.0,
+        )
+    }
+}
+
+impl fmt::Display for ColorRGB {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ColorRGB(R: {}, G: {}, B: {})", self.rojo, self.verde, self.azul)
+    }
+}
+
+// =============================================================================
+// MÓDULO: VERTEX
+// =============================================================================
+
+#[derive(Debug, Clone)]
+pub struct Vertice {
+    pub posicion: Vec3,
+    pub vector_normal: Vec3,
+    pub coordenadas_textura: Vec3,
+    pub posicion_transformada: Vec3,
+    pub normal_transformada: Vec3,
+}
+
+impl Vertice {
+    pub fn nuevo(pos: Vec3, norm: Vec3, tex: Vec3) -> Self {
+        Vertice {
+            posicion: pos,
+            vector_normal: norm,
+            coordenadas_textura: tex,
+            posicion_transformada: pos,
+            normal_transformada: norm,
         }
-        for z in self.zbuffer.iter_mut() {
-            *z = f32::INFINITY;
+    }
+}
+
+// =============================================================================
+// MÓDULO: CAMERA
+// =============================================================================
+
+pub struct CamaraVirtual {
+    pub ojo: Vec3,
+    pub objetivo: Vec3,
+    pub vector_arriba: Vec3,
+}
+
+impl CamaraVirtual {
+    pub fn nueva(posicion_ojo: Vec3, punto_objetivo: Vec3, dir_arriba: Vec3) -> Self {
+        CamaraVirtual { 
+            ojo: posicion_ojo, 
+            objetivo: punto_objetivo, 
+            vector_arriba: dir_arriba 
+        }
+    }
+}
+
+// =============================================================================
+// MÓDULO: FRAGMENT
+// =============================================================================
+
+pub struct Fragmento {
+    pub posicion: Vec3,
+    pub normal: Vec3,
+    pub profundidad: f32,
+    pub posicion_vertice: Vec3,
+    pub intensidad: f32,
+}
+
+impl Fragmento {
+    pub fn nuevo(
+        pos: Vec3, 
+        norm: Vec3, 
+        prof: f32, 
+        pos_vert: Vec3, 
+        intens: f32
+    ) -> Self {
+        Fragmento {
+            posicion: pos,
+            normal: norm,
+            profundidad: prof,
+            posicion_vertice: pos_vert,
+            intensidad: intens,
+        }
+    }
+}
+
+// =============================================================================
+// MÓDULO: FRAMEBUFFER
+// =============================================================================
+
+pub struct BufferDePantalla {
+    pub ancho: usize,
+    pub alto: usize,
+    pub buffer_colores: Vec<u32>,
+    pub buffer_profundidad: Vec<f32>,
+    color_fondo: u32,
+    color_actual: u32,
+}
+
+impl BufferDePantalla {
+    pub fn nuevo(w: usize, h: usize) -> Self {
+        BufferDePantalla {
+            ancho: w,
+            alto: h,
+            buffer_colores: vec![0; w * h],
+            buffer_profundidad: vec![f32::INFINITY; w * h],
+            color_fondo: 0x000000,
+            color_actual: 0xFFFFFF,
         }
     }
 
-    fn point(&mut self, x: usize, y: usize, color: Color, depth: f32) {
-        if x < self.width && y < self.height {
-            let index = y * self.width + x;
-            if depth < self.zbuffer[index] {
-                self.buffer[index] = color.to_u32();
-                self.zbuffer[index] = depth;
+    pub fn limpiar(&mut self) {
+        for pixel in self.buffer_colores.iter_mut() {
+            *pixel = self.color_fondo;
+        }
+        for profundidad in self.buffer_profundidad.iter_mut() {
+            *profundidad = f32::INFINITY;
+        }
+    }
+
+    pub fn dibujar_punto(&mut self, x: usize, y: usize, prof: f32) {
+        if x < self.ancho && y < self.alto {
+            let indice = y * self.ancho + x;
+            if prof < self.buffer_profundidad[indice] {
+                self.buffer_colores[indice] = self.color_actual;
+                self.buffer_profundidad[indice] = prof;
             }
         }
     }
+
+    pub fn establecer_color_fondo(&mut self, color: u32) {
+        self.color_fondo = color;
+    }
+
+    pub fn establecer_color_actual(&mut self, color: u32) {
+        self.color_actual = color;
+    }
 }
 
-// Uniforms para pasar información al shader
-struct Uniforms {
-    model_matrix: Mat4,
-    view_matrix: Mat4,
-    projection_matrix: Mat4,
-    viewport_matrix: Mat4,
-    time: f32,
-    current_shader: u32,
+// =============================================================================
+// MÓDULO: OBJ LOADER
+// =============================================================================
+
+pub struct ModeloOBJ {
+    vertices: Vec<Vec3>,
+    normales: Vec<Vec3>,
+    coordenadas_uv: Vec<Vec3>,
+    caras: Vec<[usize; 9]>,
 }
 
-// Funciones de ruido
-fn random(x: f32, y: f32) -> f32 {
-    let a = 12.9898;
-    let b = 78.233;
-    let c = 43758.5453;
-    let dt = x * a + y * b;
-    let sn = dt % PI;
-    (sn.sin() * c).fract()
+impl ModeloOBJ {
+    pub fn cargar(ruta_archivo: &str) -> Result<Self, std::io::Error> {
+        use std::fs::File;
+        use std::io::{BufRead, BufReader};
+        
+        let archivo = File::open(ruta_archivo)?;
+        let lector = BufReader::new(archivo);
+
+        let mut lista_vertices = Vec::new();
+        let mut lista_normales = Vec::new();
+        let mut lista_uvs = Vec::new();
+        let mut lista_caras = Vec::new();
+
+        for linea in lector.lines() {
+            let linea = linea?;
+            let partes: Vec<&str> = linea.split_whitespace().collect();
+
+            if partes.is_empty() {
+                continue;
+            }
+
+            match partes[0] {
+                "v" => {
+                    if partes.len() >= 4 {
+                        let x: f32 = partes[1].parse().unwrap_or(0.0);
+                        let y: f32 = partes[2].parse().unwrap_or(0.0);
+                        let z: f32 = partes[3].parse().unwrap_or(0.0);
+                        lista_vertices.push(Vec3::new(x, y, z));
+                    }
+                }
+                "vn" => {
+                    if partes.len() >= 4 {
+                        let x: f32 = partes[1].parse().unwrap_or(0.0);
+                        let y: f32 = partes[2].parse().unwrap_or(0.0);
+                        let z: f32 = partes[3].parse().unwrap_or(0.0);
+                        lista_normales.push(Vec3::new(x, y, z));
+                    }
+                }
+                "vt" => {
+                    if partes.len() >= 3 {
+                        let u: f32 = partes[1].parse().unwrap_or(0.0);
+                        let v: f32 = partes[2].parse().unwrap_or(0.0);
+                        lista_uvs.push(Vec3::new(u, v, 0.0));
+                    }
+                }
+                "f" => {
+                    if partes.len() >= 4 {
+                        let mut cara = [0; 9];
+                        for (i, parte) in partes.iter().skip(1).take(3).enumerate() {
+                            let indices: Vec<&str> = parte.split('/').collect();
+                            if !indices.is_empty() {
+                                cara[i * 3] = indices[0].parse::<usize>().unwrap_or(1) - 1;
+                            }
+                            if indices.len() > 1 && !indices[1].is_empty() {
+                                cara[i * 3 + 1] = indices[1].parse::<usize>().unwrap_or(1) - 1;
+                            }
+                            if indices.len() > 2 {
+                                cara[i * 3 + 2] = indices[2].parse::<usize>().unwrap_or(1) - 1;
+                            }
+                        }
+                        lista_caras.push(cara);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(ModeloOBJ {
+            vertices: lista_vertices,
+            normales: lista_normales,
+            coordenadas_uv: lista_uvs,
+            caras: lista_caras,
+        })
+    }
+
+    pub fn obtener_array_vertices(&self) -> Vec<Vertice> {
+        let mut array_vertices = Vec::new();
+
+        for cara in &self.caras {
+            for i in 0..3 {
+                let idx_posicion = cara[i * 3];
+                let idx_textura = cara[i * 3 + 1];
+                let idx_normal = cara[i * 3 + 2];
+
+                let posicion = self.vertices.get(idx_posicion).copied()
+                    .unwrap_or(Vec3::zeros());
+                let coord_tex = self.coordenadas_uv.get(idx_textura).copied()
+                    .unwrap_or(Vec3::zeros());
+                let normal = self.normales.get(idx_normal).copied()
+                    .unwrap_or(Vec3::new(0.0, 1.0, 0.0));
+
+                array_vertices.push(Vertice::nuevo(posicion, normal, coord_tex));
+            }
+        }
+
+        array_vertices
+    }
 }
 
-fn noise(x: f32, y: f32) -> f32 {
-    let ix = x.floor();
-    let iy = y.floor();
-    let fx = x.fract();
-    let fy = y.fract();
+// =============================================================================
+// MÓDULO: SHADERS (Simplificado - sin implementación completa de CPU)
+// =============================================================================
 
-    let a = random(ix, iy);
-    let b = random(ix + 1.0, iy);
-    let c = random(ix, iy + 1.0);
-    let d = random(ix + 1.0, iy + 1.0);
-
-    let ux = fx * fx * (3.0 - 2.0 * fx);
-    let uy = fy * fy * (3.0 - 2.0 * fy);
-
-    let ab = a * (1.0 - ux) + b * ux;
-    let cd = c * (1.0 - ux) + d * ux;
-    ab * (1.0 - uy) + cd * uy
+pub struct UniformesCPU {
+    pub projection_matrix: Mat4,
+    pub view_matrix: Mat4,
+    pub model_matrix: Mat4,
+    pub viewport_matrix: Mat4,
+    pub time: u32,
 }
 
-fn cellular_noise(x: f32, y: f32) -> f32 {
-    let cell_x = x.floor();
-    let cell_y = y.floor();
-    let mut min_dist: f32 = 10.0;
+// =============================================================================
+// APLICACIÓN PRINCIPAL CON WGPU
+// =============================================================================
 
-    for i in -1..=1 {
-        for j in -1..=1 {
-            let neighbor_x = cell_x + i as f32;
-            let neighbor_y = cell_y + j as f32;
-            
-            let point_x = neighbor_x + random(neighbor_x, neighbor_y);
-            let point_y = neighbor_y + random(neighbor_y, neighbor_x);
-            
-            let dx = x - point_x;
-            let dy = y - point_y;
-            let dist = (dx * dx + dy * dy).sqrt();
-            
-            min_dist = min_dist.min(dist);
+/// Estructura de uniformes compartida con el GPU
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct DatosUniformes {
+    tiempo_actual: f32,
+    tipo_render: u32,
+    dimension_pantalla: [f32; 2],
+    pos_planeta: [f32; 2],
+    factor_escala: f32,
+    _espaciado: f32,
+}
+
+/// Estructura de vértice con posición y normal
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct VerticeEsfera {
+    posicion: [f32; 3],
+    normal: [f32; 3],
+}
+
+impl VerticeEsfera {
+    fn descriptor_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VerticeEsfera>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+            ],
         }
     }
-
-    min_dist
 }
 
-fn turbulence(x: f32, y: f32, size: f32) -> f32 {
-    let mut value = 0.0;
-    let mut scale = size;
-
-    while scale > 1.0 {
-        value += noise(x / scale, y / scale) * scale;
-        scale /= 2.0;
-    }
-
-    value / size
-}
-
-// Shaders diferentes
-fn sun_shader(fragment: &Fragment, uniforms: &Uniforms) -> Color {
-    let uv = Vec2::new(fragment.vertex_position.x, fragment.vertex_position.y);
-    let time = uniforms.time;
-    
-    // CAPA 1: Gradiente radial del núcleo al borde
-    let dist_from_center = (uv.x * uv.x + uv.y * uv.y).sqrt();
-    let core_color = Color::new(255, 255, 220);
-    let edge_color = Color::new(255, 120, 0);
-    
-    // CAPA 2: Manchas solares usando ruido
-    let sunspot_noise = noise(uv.x * 5.0 + time * 0.1, uv.y * 5.0);
-    let sunspots = if sunspot_noise < 0.35 { 0.6 } else { 1.0 };
-    
-    // CAPA 3: Protuberancias animadas
-    let flare_noise = turbulence(
-        uv.x * 3.0 + time * 0.3,
-        uv.y * 3.0 + (time * 0.2).sin(),
-        32.0
-    );
-    let flares = (flare_noise * 0.4 + 1.0).max(0.5);
-    
-    // CAPA 4: Emisión brillante (corona)
-    let glow = (1.0 - dist_from_center * 0.9).max(0.0);
-    let emission = glow.powf(2.5) * 0.8;
-    
-    // Combinar capas
-    let base = core_color.lerp(&edge_color, dist_from_center);
-    let with_spots = base.mul(sunspots);
-    let with_flares = with_spots.mul(flares);
-    let glow_color = Color::new(255, 200, 100);
-    let final_color = with_flares.add(&glow_color.mul(emission));
-    
-    final_color
-}
-
-fn earth_shader(fragment: &Fragment, uniforms: &Uniforms) -> Color {
-    let uv = Vec2::new(
-        fragment.vertex_position.x * 2.0,
-        fragment.vertex_position.y * 2.0
-    );
-    
-    // CAPA 1: Continentes y océanos
-    let continent_noise = noise(uv.x * 3.0, uv.y * 3.0);
-    let ocean_color = Color::new(20, 60, 160);
-    let land_color = Color::new(80, 140, 60);
-    let mountain_color = Color::new(100, 100, 90);
-    let desert_color = Color::new(200, 180, 120);
-    
-    let mut base_color = if continent_noise > 0.6 {
-        mountain_color
-    } else if continent_noise > 0.4 {
-        land_color
-    } else if continent_noise > 0.38 {
-        desert_color
-    } else {
-        ocean_color
-    };
-    
-    // CAPA 2: Cráteres (solo en tierra)
-    if continent_noise > 0.38 {
-        let crater_noise = cellular_noise(uv.x * 10.0, uv.y * 10.0);
-        if crater_noise < 0.08 {
-            base_color = base_color.mul(0.5);
-        }
-    }
-    
-    // CAPA 3: Nubes
-    let cloud_noise = noise(
-        uv.x * 5.0 + uniforms.time * 0.1,
-        uv.y * 5.0
-    );
-    let cloud_color = Color::new(255, 255, 255);
-    let cloud_alpha = if cloud_noise > 0.55 {
-        (cloud_noise - 0.55) * 2.0
-    } else {
-        0.0
-    };
-    
-    // CAPA 4: Casquetes polares
-    let latitude = fragment.vertex_position.y.abs();
-    let ice_color = Color::new(240, 250, 255);
-    if latitude > 0.75 {
-        let ice_factor = ((latitude - 0.75) / 0.25).min(1.0);
-        base_color = base_color.lerp(&ice_color, ice_factor);
-    }
-    
-    // Aplicar nubes
-    base_color = base_color.lerp(&cloud_color, cloud_alpha * 0.6);
-    
-    // Iluminación
-    base_color.mul(fragment.intensity.max(0.2))
-}
-
-fn gas_giant_shader(fragment: &Fragment, uniforms: &Uniforms) -> Color {
-    let uv = Vec2::new(fragment.vertex_position.x, fragment.vertex_position.y);
-    let time = uniforms.time;
-    
-    // CAPA 1: Bandas horizontales
-    let latitude = uv.y;
-    let band_freq = 8.0;
-    let band_value = ((latitude + 1.0) * band_freq).sin();
-    
-    let band_color1 = Color::new(210, 180, 140);
-    let band_color2 = Color::new(180, 140, 100);
-    let band_color3 = Color::new(140, 100, 70);
-    
-    let mut base_color = if band_value > 0.3 {
-        band_color1
-    } else if band_value > -0.3 {
-        band_color2
-    } else {
-        band_color3
-    };
-    
-    // CAPA 2: Gran Mancha Roja
-    let storm_x = 0.3;
-    let storm_y = 0.2;
-    let dist_to_storm = ((uv.x - storm_x).powi(2) + (uv.y - storm_y).powi(2)).sqrt();
-    
-    if dist_to_storm < 0.18 {
-        let storm_color = Color::new(180, 60, 40);
-        let storm_noise = noise(uv.x * 10.0, uv.y * 10.0);
-        let storm_factor = (1.0 - (dist_to_storm / 0.18)) * 0.9;
-        base_color = base_color.lerp(&storm_color, storm_factor * storm_noise);
-    }
-    
-    // CAPA 3: Turbulencias
-    let turb = turbulence(
-        uv.x * 10.0 + time * 0.05,
-        uv.y * 3.0,
-        64.0
-    );
-    let turb_offset = (turb - 0.5) * 0.3;
-    base_color = base_color.mul(1.0 + turb_offset);
-    
-    // CAPA 4: Remolinos en los límites de las bandas
-    let swirl_noise = noise(uv.x * 20.0, uv.y * 5.0 + time * 0.1);
-    if swirl_noise > 0.75 {
-        let swirl_color = Color::new(200, 170, 130);
-        base_color = base_color.lerp(&swirl_color, 0.4);
-    }
-    
-    base_color.mul(fragment.intensity.max(0.15))
-}
-
-fn volcanic_planet_shader(fragment: &Fragment, uniforms: &Uniforms) -> Color {
-    let uv = Vec2::new(
-        fragment.vertex_position.x * 2.0,
-        fragment.vertex_position.y * 2.0
-    );
-    let time = uniforms.time;
-    
-    // CAPA 1: Base rocosa oscura
-    let rock_color = Color::new(40, 30, 30);
-    let lava_color = Color::new(255, 80, 0);
-    
-    // CAPA 2: Grietas de lava usando ruido celular
-    let crack_noise = cellular_noise(uv.x * 15.0, uv.y * 15.0);
-    let is_crack = crack_noise < 0.15;
-    
-    // CAPA 3: Pulsación de lava
-    let pulse = ((time * 2.0).sin() * 0.5 + 0.5) * 0.5 + 0.5;
-    
-    // CAPA 4: Volcanes activos
-    let volcano_noise = noise(uv.x * 3.0, uv.y * 3.0);
-    let is_volcano = volcano_noise > 0.7;
-    
-    let mut base_color = if is_crack {
-        lava_color.mul(pulse)
-    } else if is_volcano {
-        let glow = (time * 3.0 + volcano_noise * 10.0).sin() * 0.5 + 0.5;
-        rock_color.lerp(&Color::new(255, 100, 0), glow * 0.7)
-    } else {
-        rock_color
-    };
-    
-    // Emisión de luz desde las grietas
-    if is_crack {
-        base_color = base_color.add(&Color::new(100, 30, 0));
-    }
-    
-    base_color.mul(fragment.intensity.max(0.3))
-}
-
-fn ice_planet_shader(fragment: &Fragment, _uniforms: &Uniforms) -> Color {
-    let uv = Vec2::new(
-        fragment.vertex_position.x * 2.0,
-        fragment.vertex_position.y * 2.0
-    );
-    
-    // CAPA 1: Base de hielo
-    let ice_color1 = Color::new(200, 220, 255);
-    let ice_color2 = Color::new(150, 180, 230);
-    
-    // CAPA 2: Grietas en el hielo
-    let crack_noise = cellular_noise(uv.x * 12.0, uv.y * 12.0);
-    let is_crack = crack_noise < 0.1;
-    
-    // CAPA 3: Cristales de hielo
-    let crystal_noise = noise(uv.x * 20.0, uv.y * 20.0);
-    let is_crystal = crystal_noise > 0.75;
-    
-    // CAPA 4: Variación de superficie
-    let surface_noise = turbulence(uv.x * 5.0, uv.y * 5.0, 32.0);
-    
-    let mut base_color = ice_color1.lerp(&ice_color2, surface_noise);
-    
-    if is_crack {
-        base_color = base_color.mul(0.5);
-    }
-    
-    if is_crystal {
-        let crystal_color = Color::new(240, 250, 255);
-        base_color = base_color.lerp(&crystal_color, 0.6);
-    }
-    
-    base_color.mul(fragment.intensity.max(0.25))
-}
-
-fn desert_planet_shader(fragment: &Fragment, uniforms: &Uniforms) -> Color {
-    let uv = Vec2::new(
-        fragment.vertex_position.x * 2.0,
-        fragment.vertex_position.y * 2.0
-    );
-    let time = uniforms.time;
-    
-    // CAPA 1: Colores de arena
-    let sand_color1 = Color::new(220, 180, 120);
-    let sand_color2 = Color::new(200, 150, 90);
-    let sand_color3 = Color::new(180, 130, 70);
-    
-    // CAPA 2: Dunas (ondulaciones)
-    let dune_pattern = ((uv.x * 10.0).sin() + (uv.y * 10.0).cos()) * 0.5 + 0.5;
-    
-    let mut base_color = if dune_pattern > 0.6 {
-        sand_color1
-    } else if dune_pattern > 0.3 {
-        sand_color2
-    } else {
-        sand_color3
-    };
-    
-    // CAPA 3: Tormentas de arena
-    let storm_noise = turbulence(
-        uv.x * 5.0 + time * 0.2,
-        uv.y * 5.0,
-        32.0
-    );
-    base_color = base_color.mul(0.7 + storm_noise * 0.3);
-    
-    // CAPA 4: Formaciones rocosas
-    let rock_noise = cellular_noise(uv.x * 8.0, uv.y * 8.0);
-    if rock_noise < 0.05 {
-        let rock_color = Color::new(100, 80, 60);
-        base_color = base_color.lerp(&rock_color, 0.7);
-    }
-    
-    base_color.mul(fragment.intensity.max(0.2))
-}
-
-fn moon_shader(fragment: &Fragment, _uniforms: &Uniforms) -> Color {
-    let uv = Vec2::new(
-        fragment.vertex_position.x * 2.0,
-        fragment.vertex_position.y * 2.0
-    );
-    
-    // CAPA 1: Base gris lunar
-    let base_color = Color::new(140, 140, 145);
-    let dark_color = Color::new(80, 80, 85);
-    
-    // CAPA 2: Cráteres densos
-    let crater_noise = cellular_noise(uv.x * 20.0, uv.y * 20.0);
-    let crater_factor = if crater_noise < 0.15 { 0.6 } else { 1.0 };
-    
-    // CAPA 3: Mares lunares
-    let mare_noise = noise(uv.x * 2.0, uv.y * 2.0);
-    let is_mare = mare_noise < 0.3;
-    
-    // CAPA 4: Cráteres grandes
-    let big_crater = cellular_noise(uv.x * 5.0, uv.y * 5.0);
-    let is_big_crater = big_crater < 0.1;
-    
-    let mut final_color = if is_mare {
-        dark_color
-    } else {
-        base_color
-    };
-    
-    final_color = final_color.mul(crater_factor);
-    
-    if is_big_crater {
-        final_color = final_color.mul(0.5);
-    }
-    
-    final_color.mul(fragment.intensity.max(0.15))
-}
-
-fn ring_shader(fragment: &Fragment, _uniforms: &Uniforms) -> Color {
-    let distance = (fragment.vertex_position.x.powi(2) + fragment.vertex_position.z.powi(2)).sqrt();
-    
-    // Anillos concéntricos con gaps
-    let ring_pattern = (distance * 30.0).sin();
-    
-    // División de Cassini (gap)
-    let in_gap = distance > 0.35 && distance < 0.42;
-    
-    if in_gap {
-        return Color::new(0, 0, 0); // Transparente
-    }
-    
-    // Colores de los anillos
-    let ring_color1 = Color::new(180, 170, 150);
-    let ring_color2 = Color::new(150, 140, 120);
-    
-    let base = if ring_pattern > 0.0 {
-        ring_color1
-    } else {
-        ring_color2
-    };
-    
-    // Variación con ruido
-    let variation = noise(
-        fragment.vertex_position.x * 80.0,
-        fragment.vertex_position.z * 80.0
-    );
-    
-    base.mul(0.7 + variation * 0.3)
-}
-
-// Función principal del fragment shader
-fn fragment_shader(fragment: &Fragment, uniforms: &Uniforms) -> Color {
-    match uniforms.current_shader {
-        0 => sun_shader(fragment, uniforms),
-        1 => earth_shader(fragment, uniforms),
-        2 => gas_giant_shader(fragment, uniforms),
-        3 => volcanic_planet_shader(fragment, uniforms),
-        4 => ice_planet_shader(fragment, uniforms),
-        5 => desert_planet_shader(fragment, uniforms),
-        6 => moon_shader(fragment, uniforms),
-        7 => ring_shader(fragment, uniforms),
-        _ => Color::new(255, 0, 255), // Magenta para errores
-    }
-}
-
-// Vertex shader
-fn vertex_shader(vertex: &Vertex, uniforms: &Uniforms) -> Vec4 {
-    let position = Vec4::new(
-        vertex.position.x,
-        vertex.position.y,
-        vertex.position.z,
-        1.0
-    );
-    
-    uniforms.projection_matrix * uniforms.view_matrix * uniforms.model_matrix * position
-}
-
-// Crear una esfera CORREGIDA
-fn create_sphere(radius: f32, rings: u32, sectors: u32) -> (Vec<Vertex>, Vec<u32>) {
+fn generar_esfera(subdivisiones: u32) -> (Vec<VerticeEsfera>, Vec<u16>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    
-    let r = 1.0 / (rings - 1) as f32;
-    let s = 1.0 / (sectors - 1) as f32;
-    
-    for ring in 0..rings {
-        for sector in 0..sectors {
-            let theta = PI * ring as f32 * r;
-            let phi = 2.0 * PI * sector as f32 * s;
-            
-            let x = theta.sin() * phi.cos();
-            let y = theta.cos();
-            let z = theta.sin() * phi.sin();
-            
-            vertices.push(Vertex {
-                position: Vec3::new(x * radius, y * radius, z * radius),
-                normal: Vec3::new(x, y, z),
+
+    for latitud in 0..=subdivisiones {
+        let theta = latitud as f32 * std::f32::consts::PI / subdivisiones as f32;
+        let seno_theta = theta.sin();
+        let coseno_theta = theta.cos();
+
+        for longitud in 0..=subdivisiones {
+            let phi = longitud as f32 * 2.0 * std::f32::consts::PI / subdivisiones as f32;
+            let seno_phi = phi.sin();
+            let coseno_phi = phi.cos();
+
+            let coord_x = seno_theta * coseno_phi;
+            let coord_y = coseno_theta;
+            let coord_z = seno_theta * seno_phi;
+
+            vertices.push(VerticeEsfera {
+                posicion: [coord_x, coord_y, coord_z],
+                normal: [coord_x, coord_y, coord_z],
             });
         }
     }
-    
-    for ring in 0..rings - 1 {
-        for sector in 0..sectors - 1 {
-            let current = ring * sectors + sector;
-            let next = current + sectors;
-            
-            indices.push(current);
-            indices.push(next);
-            indices.push(current + 1);
-            
-            indices.push(current + 1);
-            indices.push(next);
-            indices.push(next + 1);
+
+    for lat in 0..subdivisiones {
+        for lon in 0..subdivisiones {
+            let primero = (lat * (subdivisiones + 1) + lon) as u16;
+            let segundo = primero + subdivisiones as u16 + 1;
+
+            indices.push(primero);
+            indices.push(segundo);
+            indices.push(primero + 1);
+
+            indices.push(segundo);
+            indices.push(segundo + 1);
+            indices.push(primero + 1);
         }
     }
-    
+
     (vertices, indices)
 }
 
-// Crear un anillo (disco plano)
-fn create_ring(inner_radius: f32, outer_radius: f32, segments: u32) -> (Vec<Vertex>, Vec<u32>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    
-    for i in 0..=segments {
-        let angle = 2.0 * PI * i as f32 / segments as f32;
-        let cos_a = angle.cos();
-        let sin_a = angle.sin();
-        
-        // Vértice interior
-        vertices.push(Vertex {
-            position: Vec3::new(cos_a * inner_radius, 0.0, sin_a * inner_radius),
-            normal: Vec3::new(0.0, 1.0, 0.0),
-        });
-        
-        // Vértice exterior
-        vertices.push(Vertex {
-            position: Vec3::new(cos_a * outer_radius, 0.0, sin_a * outer_radius),
-            normal: Vec3::new(0.0, 1.0, 0.0),
-        });
-    }
-    
-    for i in 0..segments {
-        let base = i * 2;
-        
-        indices.push(base);
-        indices.push(base + 1);
-        indices.push(base + 2);
-        
-        indices.push(base + 1);
-        indices.push(base + 3);
-        indices.push(base + 2);
-    }
-    
-    (vertices, indices)
+struct EstadoAplicacion {
+    superficie: wgpu::Surface<'static>,
+    dispositivo: wgpu::Device,
+    cola_comandos: wgpu::Queue,
+    configuracion: wgpu::SurfaceConfiguration,
+    tamano_ventana: winit::dpi::PhysicalSize<u32>,
+    pipeline_render: wgpu::RenderPipeline,
+    buffer_vertices: wgpu::Buffer,
+    buffer_indices: wgpu::Buffer,
+    cantidad_indices: u32,
+    buffer_uniformes: wgpu::Buffer,
+    grupo_bind_uniformes: wgpu::BindGroup,
+    datos_uniformes: DatosUniformes,
+    rotacion_camara: [f32; 2],
+    tiempo_inicio: std::time::Instant,
 }
 
-// Renderizar un triángulo
-fn triangle(v1: &Vec4, v2: &Vec4, v3: &Vec4, 
-            n1: &Vec3, n2: &Vec3, n3: &Vec3,
-            vp1: &Vec3, vp2: &Vec3, vp3: &Vec3,
-            framebuffer: &mut Framebuffer, 
-            uniforms: &Uniforms) {
-    
-    let (a, b, c) = (v1, v2, v3);
-    
-    let min_x = a.x.min(b.x).min(c.x).floor() as i32;
-    let min_y = a.y.min(b.y).min(c.y).floor() as i32;
-    let max_x = a.x.max(b.x).max(c.x).ceil() as i32;
-    let max_y = a.y.max(b.y).max(c.y).ceil() as i32;
-    
-    let min_x = min_x.max(0);
-    let min_y = min_y.max(0);
-    let max_x = max_x.min(framebuffer.width as i32 - 1);
-    let max_y = max_y.min(framebuffer.height as i32 - 1);
-    
-    let light_dir = Vec3::new(0.0, 0.0, 1.0);
-    
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let point = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, 0.0);
-            
-            let (w1, w2, w3) = barycentric(&Vec3::new(a.x, a.y, 0.0),
-                                           &Vec3::new(b.x, b.y, 0.0),
-                                           &Vec3::new(c.x, c.y, 0.0),
-                                           &point);
-            
-            if w1 >= 0.0 && w2 >= 0.0 && w3 >= 0.0 {
-                let depth = w1 * a.z + w2 * b.z + w3 * c.z;
+impl EstadoAplicacion {
+    async fn inicializar(ventana: Arc<Window>) -> Self {
+        let tamano_ventana = ventana.inner_size();
+
+        let instancia = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        let superficie = instancia.create_surface(ventana.clone()).unwrap();
+
+        let adaptador = instancia
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&superficie),
+                force_fallback_adapter: false,
+            })
+            .await
+            .unwrap();
+
+        let (dispositivo, cola_comandos) = adaptador
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let capacidades_superficie = superficie.get_capabilities(&adaptador);
+        let formato_superficie = capacidades_superficie
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(capacidades_superficie.formats[0]);
+
+        let configuracion = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: formato_superficie,
+            width: tamano_ventana.width,
+            height: tamano_ventana.height,
+            present_mode: capacidades_superficie
+                .present_modes
+                .iter()
+                .copied()
+                .find(|m| m == &wgpu::PresentMode::Fifo)
+                .unwrap_or(capacidades_superficie.present_modes[0]),
+            alpha_mode: capacidades_superficie.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        superficie.configure(&dispositivo, &configuracion);
+
+        let (vertices, indices) = generar_esfera(50);
+        let cantidad_indices = indices.len() as u32;
+
+        let buffer_vertices = dispositivo.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Buffer de Vértices"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let buffer_indices = dispositivo.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Buffer de Índices"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let datos_uniformes = DatosUniformes {
+            tiempo_actual: 0.0,
+            tipo_render: 1,
+            dimension_pantalla: [tamano_ventana.width as f32, tamano_ventana.height as f32],
+            pos_planeta: [0.0, 0.0],
+            factor_escala: 0.3,
+            _espaciado: 0.0,
+        };
+
+        let buffer_uniformes = dispositivo.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Buffer de Uniformes"),
+            contents: bytemuck::cast_slice(&[datos_uniformes]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let layout_bind_group_uniformes =
+            dispositivo.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("Layout de Bind Group de Uniformes"),
+            });
+
+        let grupo_bind_uniformes = dispositivo.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &layout_bind_group_uniformes,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer_uniformes.as_entire_binding(),
+            }],
+            label: Some("Bind Group de Uniformes"),
+        });
+
+        // Shader WGSL embebido
+        let codigo_shader = include_str!("shader.wgsl");
+        
+        let modulo_shader = dispositivo.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Módulo de Shader Principal"),
+            source: wgpu::ShaderSource::Wgsl(codigo_shader.into()),
+        });
+
+        let layout_pipeline_render =
+            dispositivo.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Layout del Pipeline de Render"),
+                bind_group_layouts: &[&layout_bind_group_uniformes],
+                push_constant_ranges: &[],
+            });
+
+        let pipeline_render = dispositivo.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Pipeline de Renderizado Principal"),
+            layout: Some(&layout_pipeline_render),
+            vertex: wgpu::VertexState {
+                module: &modulo_shader,
+                entry_point: "vertex_principal",
+                buffers: &[VerticeEsfera::descriptor_layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &modulo_shader,
+                entry_point: "fragment_principal",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: configuracion.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+        });
+
+        Self {
+            superficie,
+            dispositivo,
+            cola_comandos,
+            configuracion,
+            tamano_ventana,
+            pipeline_render,
+            buffer_vertices,
+            buffer_indices,
+            cantidad_indices,
+            buffer_uniformes,
+            grupo_bind_uniformes,
+            datos_uniformes,
+            rotacion_camara: [0.0, 0.0],
+            tiempo_inicio: std::time::Instant::now(),
+        }
+    }
+
+    pub fn redimensionar(&mut self, nuevo_tamano: winit::dpi::PhysicalSize<u32>) {
+        if nuevo_tamano.width > 0 && nuevo_tamano.height > 0 {
+            self.tamano_ventana = nuevo_tamano;
+            self.configuracion.width = nuevo_tamano.width;
+            self.configuracion.height = nuevo_tamano.height;
+            self.superficie.configure(&self.dispositivo, &self.configuracion);
+            self.datos_uniformes.dimension_pantalla = [
+                nuevo_tamano.width as f32, 
+                nuevo_tamano.height as f32
+            ];
+        }
+    }
+
+    fn procesar_entrada(&mut self, evento: &KeyEvent) -> bool {
+        match evento.physical_key {
+            PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                self.rotacion_camara[0] -= 0.1;
+                true
+            }
+            PhysicalKey::Code(KeyCode::ArrowRight) => {
+                self.rotacion_camara[0] += 0.1;
+                true
+            }
+            PhysicalKey::Code(KeyCode::ArrowUp) => {
+                self.rotacion_camara[1] = (self.rotacion_camara[1] + 0.1).min(1.5);
+                true
+            }
+            PhysicalKey::Code(KeyCode::ArrowDown) => {
+                self.rotacion_camara[1] = (self.rotacion_camara[1] - 0.1).max(-1.5);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn actualizar(&mut self) {
+        self.datos_uniformes.tiempo_actual = self.tiempo_inicio.elapsed().as_secs_f32();
+        self.cola_comandos.write_buffer(
+            &self.buffer_uniformes,
+            0,
+            bytemuck::cast_slice(&[self.datos_uniformes]),
+        );
+    }
+
+    fn renderizar(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let salida = self.superficie.get_current_texture()?;
+        let vista = salida
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut codificador = self
+            .dispositivo
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Codificador de Comandos de Render"),
+            });
+
+        // Configuración: [posición_x, posición_y, escala, tipo_shader]
+        // Tipos: 1=Sol, 2=Rocoso(Marte), 3=Gaseoso(Júpiter), 4=Anillos(Saturno), 5=Volcánico, 6=Luna(Hielo)
+        let configuracion_planetas = [
+            [0.0, 0.0, 0.5, 1.0],      // Centro: Sol (más grande, amarillo-azul)
+            [-0.5, 0.4, 0.15, 2.0],    // Izq arriba: Marte (rojo)
+            [-0.7, -0.3, 0.25, 3.0],   // Izq abajo: Júpiter (grande, bandas)
+            [0.65, 0.25, 0.35, 4.0],   // Der arriba: Saturno (con anillos verdes)
+            [0.5, -0.35, 0.08, 5.0],   // Der centro: Volcánico (pequeño, lava cyan)
+            [0.2, -0.65, 0.18, 6.0],   // Abajo: Luna helada (azul-blanco)
+        ];
+
+        let datos_planetas: Vec<_> = configuracion_planetas
+            .iter()
+            .map(|config_planeta| {
+                let mut uniformes_planeta = self.datos_uniformes;
+                uniformes_planeta.pos_planeta = [config_planeta[0], config_planeta[1]];
+                uniformes_planeta.factor_escala = config_planeta[2];
+                uniformes_planeta.tipo_render = config_planeta[3] as u32;
+
+                let buffer_uniforme_planeta = self.dispositivo.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("Buffer de Uniformes de Planeta"),
+                        contents: bytemuck::cast_slice(&[uniformes_planeta]),
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    }
+                );
+
+                let bind_group_planeta = self.dispositivo.create_bind_group(
+                    &wgpu::BindGroupDescriptor {
+                        layout: &self.pipeline_render.get_bind_group_layout(0),
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buffer_uniforme_planeta.as_entire_binding(),
+                        }],
+                        label: Some("Bind Group de Planeta"),
+                    }
+                );
+
+                (buffer_uniforme_planeta, bind_group_planeta)
+            })
+            .collect();
+
+        {
+            let mut pase_render = codificador.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Pase de Renderizado Principal"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &vista,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.01,
+                            g: 0.01,
+                            b: 0.03,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+
+            pase_render.set_pipeline(&self.pipeline_render);
+            pase_render.set_vertex_buffer(0, self.buffer_vertices.slice(..));
+            pase_render.set_index_buffer(self.buffer_indices.slice(..), wgpu::IndexFormat::Uint16);
+
+            for i in 0..200 {
+                let posicion_x = (i as f32 * 567.123).sin() * 2.0;
+                let posicion_y = (i as f32 * 432.567).cos() * 2.0;
+                let tamano_estrella = ((i as f32 * 789.345).sin() * 0.5 + 0.5) * 0.003;
                 
-                let normal = (n1 * w1 + n2 * w2 + n3 * w3).normalize();
-                let vertex_pos = vp1 * w1 + vp2 * w2 + vp3 * w3;
-                
-                let intensity = normal.dot(&light_dir).max(0.0);
-                
-                let fragment = Fragment {
-                    position: Vec3::new(x as f32, y as f32, depth),
-                    normal,
-                    intensity,
-                    vertex_position: vertex_pos,
-                };
-                
-                let color = fragment_shader(&fragment, uniforms);
-                framebuffer.point(x as usize, y as usize, color, depth);
+                let mut uniformes_estrella = self.datos_uniformes;
+                uniformes_estrella.pos_planeta = [posicion_x, posicion_y];
+                uniformes_estrella.factor_escala = tamano_estrella;
+                uniformes_estrella.tipo_render = 7;
+
+                self.cola_comandos.write_buffer(
+                    &self.buffer_uniformes, 
+                    0, 
+                    bytemuck::cast_slice(&[uniformes_estrella])
+                );
+                pase_render.set_bind_group(0, &self.grupo_bind_uniformes, &[]);
+                pase_render.draw_indexed(0..self.cantidad_indices, 0, 0..1);
+            }
+
+            for (indice, (buffer_planeta, bind_group_planeta)) in datos_planetas.iter().enumerate() {
+                let planeta = configuracion_planetas[indice];
+
+                let mut uniformes_planeta = self.datos_uniformes;
+                uniformes_planeta.pos_planeta = [
+                    planeta[0] * self.rotacion_camara[0].cos() 
+                        - planeta[2] * self.rotacion_camara[0].sin(),
+                    planeta[1] * self.rotacion_camara[1].cos()
+                ];
+                uniformes_planeta.factor_escala = planeta[2] * 
+                    (0.8 + 0.2 * (self.rotacion_camara[0].cos() 
+                               * self.rotacion_camara[1].cos()));
+                uniformes_planeta.tipo_render = planeta[3] as u32;
+
+                self.cola_comandos.write_buffer(
+                    buffer_planeta, 
+                    0, 
+                    bytemuck::cast_slice(&[uniformes_planeta])
+                );
+                pase_render.set_bind_group(0, bind_group_planeta, &[]);
+                pase_render.draw_indexed(0..self.cantidad_indices, 0, 0..1);
             }
         }
+
+        self.cola_comandos.submit(std::iter::once(codificador.finish()));
+        salida.present();
+
+        Ok(())
     }
-}
-
-fn barycentric(a: &Vec3, b: &Vec3, c: &Vec3, p: &Vec3) -> (f32, f32, f32) {
-    let v0 = b - a;
-    let v1 = c - a;
-    let v2 = p - a;
-    
-    let d00 = v0.dot(&v0);
-    let d01 = v0.dot(&v1);
-    let d11 = v1.dot(&v1);
-    let d20 = v2.dot(&v0);
-    let d21 = v2.dot(&v1);
-    
-    let denom = d00 * d11 - d01 * d01;
-    
-    if denom.abs() < 1e-6 {
-        return (0.0, 0.0, 0.0);
-    }
-    
-    let v = (d11 * d20 - d01 * d21) / denom;
-    let w = (d00 * d21 - d01 * d20) / denom;
-    let u = 1.0 - v - w;
-    
-    (u, v, w)
-}
-
-fn render(framebuffer: &mut Framebuffer, uniforms: &Uniforms, 
-          vertices: &[Vertex], indices: &[u32]) {
-    
-    let mut transformed_vertices = Vec::new();
-    
-    for vertex in vertices {
-        let pos = vertex_shader(vertex, uniforms);
-        transformed_vertices.push((pos, vertex.normal, vertex.position));
-    }
-    
-    for i in (0..indices.len()).step_by(3) {
-        let i1 = indices[i] as usize;
-        let i2 = indices[i + 1] as usize;
-        let i3 = indices[i + 2] as usize;
-        
-        let (v1, n1, vp1) = &transformed_vertices[i1];
-        let (v2, n2, vp2) = &transformed_vertices[i2];
-        let (v3, n3, vp3) = &transformed_vertices[i3];
-        
-        let mut v1_ndc = *v1;
-        let mut v2_ndc = *v2;
-        let mut v3_ndc = *v3;
-        
-        if v1_ndc.w != 0.0 {
-            v1_ndc.x /= v1_ndc.w;
-            v1_ndc.y /= v1_ndc.w;
-            v1_ndc.z /= v1_ndc.w;
-        }
-        if v2_ndc.w != 0.0 {
-            v2_ndc.x /= v2_ndc.w;
-            v2_ndc.y /= v2_ndc.w;
-            v2_ndc.z /= v2_ndc.w;
-        }
-        if v3_ndc.w != 0.0 {
-            v3_ndc.x /= v3_ndc.w;
-            v3_ndc.y /= v3_ndc.w;
-            v3_ndc.z /= v3_ndc.w;
-        }
-        
-        let v1_screen = uniforms.viewport_matrix * v1_ndc;
-        let v2_screen = uniforms.viewport_matrix * v2_ndc;
-        let v3_screen = uniforms.viewport_matrix * v3_ndc;
-        
-        triangle(&v1_screen, &v2_screen, &v3_screen,
-                n1, n2, n3,
-                vp1, vp2, vp3,
-                framebuffer, uniforms);
-    }
-}
-
-fn create_model_matrix(translation: Vec3, rotation: Vec3, scale: f32) -> Mat4 {
-    let translation_matrix = Mat4::new_translation(&translation);
-    
-    let rotation_x = Mat4::from_euler_angles(rotation.x, 0.0, 0.0);
-    let rotation_y = Mat4::from_euler_angles(0.0, rotation.y, 0.0);
-    let rotation_z = Mat4::from_euler_angles(0.0, 0.0, rotation.z);
-    
-    let rotation_matrix = rotation_z * rotation_y * rotation_x;
-    
-    let scale_matrix = Mat4::new_scaling(scale);
-    
-    translation_matrix * rotation_matrix * scale_matrix
-}
-
-fn create_view_matrix(eye: Vec3, center: Vec3, up: Vec3) -> Mat4 {
-    nalgebra_glm::look_at(&eye, &center, &up)
-}
-
-fn create_perspective_matrix(fov: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
-    nalgebra_glm::perspective(aspect, fov, near, far)
-}
-
-fn create_viewport_matrix(width: f32, height: f32) -> Mat4 {
-    Mat4::new(
-        width / 2.0, 0.0, 0.0, width / 2.0,
-        0.0, -height / 2.0, 0.0, height / 2.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
-    )
 }
 
 fn main() {
-    let mut window = Window::new(
-        "Sistema Solar - Shaders Procedurales",
-        WIDTH,
-        HEIGHT,
-        WindowOptions::default(),
-    )
-    .unwrap();
+    env_logger::init();
+    
+    let loop_eventos = EventLoop::new().unwrap();
+    let ventana = Arc::new(
+        winit::window::WindowBuilder::new()
+            .with_title("Sistema Solar - Pablo Cabrera 231156")
+            .with_inner_size(winit::dpi::LogicalSize::new(1000, 800))
+            .build(&loop_eventos)
+            .unwrap(),
+    );
 
-    window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
+    let mut estado = pollster::block_on(EstadoAplicacion::inicializar(ventana.clone()));
 
-    let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
-    
-    // Crear geometría - TAMAÑO AUMENTADO
-    let (sphere_vertices, sphere_indices) = create_sphere(1.5, 30, 30);
-    let (ring_vertices, ring_indices) = create_ring(1.95, 2.7, 60);
-    
-    let mut time = 0.0;
-    let mut current_shader = 0u32;
-    let mut rotation = 0.0f32;
-    let mut paused = false;
-    
-    println!("=== CONTROLES ===");
-    println!("1-7: Cambiar shader (Sol, Tierra, Júpiter, Volcán, Hielo, Desierto, Luna)");
-    println!("8: Júpiter con anillos");
-    println!("ESPACIO: Pausar/Reanudar rotación");
-    println!("R: Resetear rotación");
-    println!("ESC: Salir");
-    println!("\nShader actual: 0 - Sol");
-    
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        // Input handling
-        if window.is_key_pressed(Key::Key1, minifb::KeyRepeat::No) {
-            current_shader = 0;
-            println!("Shader: 0 - Sol");
-        }
-        if window.is_key_pressed(Key::Key2, minifb::KeyRepeat::No) {
-            current_shader = 1;
-            println!("Shader: 1 - Tierra");
-        }
-        if window.is_key_pressed(Key::Key3, minifb::KeyRepeat::No) {
-            current_shader = 2;
-            println!("Shader: 2 - Júpiter (Gigante Gaseoso)");
-        }
-        if window.is_key_pressed(Key::Key4, minifb::KeyRepeat::No) {
-            current_shader = 3;
-            println!("Shader: 3 - Planeta Volcánico");
-        }
-        if window.is_key_pressed(Key::Key5, minifb::KeyRepeat::No) {
-            current_shader = 4;
-            println!("Shader: 4 - Planeta Helado");
-        }
-        if window.is_key_pressed(Key::Key6, minifb::KeyRepeat::No) {
-            current_shader = 5;
-            println!("Shader: 5 - Planeta Desierto");
-        }
-        if window.is_key_pressed(Key::Key7, minifb::KeyRepeat::No) {
-            current_shader = 6;
-            println!("Shader: 6 - Luna");
-        }
-        if window.is_key_pressed(Key::Key8, minifb::KeyRepeat::No) {
-            println!("Modo: Júpiter con Anillos");
-        }
-        if window.is_key_pressed(Key::Space, minifb::KeyRepeat::No) {
-            paused = !paused;
-            println!("Rotación: {}", if paused { "PAUSADA" } else { "ACTIVA" });
-        }
-        if window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {
-            rotation = 0.0;
-            time = 0.0;
-            println!("Rotación reseteada");
-        }
-        
-        framebuffer.clear(Color::new(0, 0, 10));
-        
-        if !paused {
-            time += 0.016;
-            rotation += 0.01;
-        }
-        
-        let model_matrix = create_model_matrix(
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, rotation, 0.0),
-            1.0
-        );
-        
-        // CÁMARA MÁS CERCA
-        let view_matrix = create_view_matrix(
-            Vec3::new(0.0, 0.0, 3.5),
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0)
-        );
-        
-        let projection_matrix = create_perspective_matrix(
-            45.0 * PI / 180.0,
-            WIDTH as f32 / HEIGHT as f32,
-            0.1,
-            100.0
-        );
-        
-        let viewport_matrix = create_viewport_matrix(WIDTH as f32, HEIGHT as f32);
-        
-        let uniforms = Uniforms {
-            model_matrix,
-            view_matrix,
-            projection_matrix,
-            viewport_matrix,
-            time,
-            current_shader,
-        };
-        
-        // Renderizar planeta
-        render(&mut framebuffer, &uniforms, &sphere_vertices, &sphere_indices);
-        
-        // Renderizar anillos si es tecla 8
-        if window.is_key_down(Key::Key8) {
-            let ring_uniforms = Uniforms {
-                model_matrix,
-                view_matrix,
-                projection_matrix,
-                viewport_matrix,
-                time,
-                current_shader: 7, // Ring shader
-            };
-            render(&mut framebuffer, &ring_uniforms, &ring_vertices, &ring_indices);
-        }
-        
-        window
-            .update_with_buffer(&framebuffer.buffer, WIDTH, HEIGHT)
-            .unwrap();
-    }
+    println!("===========================================");
+    println!("Sistema Solar Interactivo - TODO EN UNO");
+    println!("Autor: Pablo Cabrera - Carné: 231156");
+    println!("===========================================");
+    println!("Controles:");
+    println!("  Flechas: Rotar cámara");
+    println!("  ESC: Salir");
+    println!("===========================================");
+
+    loop_eventos
+        .run(move |evento, control_flujo| {
+            match evento {
+                Event::WindowEvent {
+                    ref event,
+                    window_id,
+                } if window_id == ventana.id() => match event {
+                    WindowEvent::CloseRequested
+                    | WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                state: ElementState::Pressed,
+                                physical_key: PhysicalKey::Code(KeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    } => control_flujo.exit(),
+                    WindowEvent::Resized(tamano_fisico) => {
+                        estado.redimensionar(*tamano_fisico);
+                    }
+                    WindowEvent::KeyboardInput { event, .. } => {
+                        estado.procesar_entrada(event);
+                    }
+                    WindowEvent::RedrawRequested => {
+                        estado.actualizar();
+                        match estado.renderizar() {
+                            Ok(_) => {}
+                            Err(wgpu::SurfaceError::Lost) => estado.redimensionar(estado.tamano_ventana),
+                            Err(wgpu::SurfaceError::OutOfMemory) => control_flujo.exit(),
+                            Err(e) => eprintln!("Error de renderizado: {:?}", e),
+                        }
+                    }
+                    _ => {}
+                },
+                Event::AboutToWait => {
+                    ventana.request_redraw();
+                }
+                _ => {}
+            }
+        })
+        .unwrap();
 }

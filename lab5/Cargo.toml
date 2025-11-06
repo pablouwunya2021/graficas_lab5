@@ -1,8 +1,21 @@
 [package]
-name = "lab5"
+name = "sistema-solar-pablo-cabrera"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+# Renderizado GPU
+wgpu = "0.19"
+winit = "0.29"
+
+# Matemáticas 3D
 nalgebra-glm = "0.18"
-minifb = "0.25"
+
+# Utilidades
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.3"
+env_logger = "0.11"
+
+[[bin]]
+name = "sistema-solar"
+path = "src/main.rs"
