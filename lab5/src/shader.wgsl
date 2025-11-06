@@ -149,12 +149,13 @@ fn patron_voronoi(p: vec3<f32>) -> f32 {
 fn shader_sol(pos: vec3<f32>, t: f32) -> vec3<f32> {
     let p = pos * 3.0;
     
-    // Sistema de plasma multicapa
-    let plasma1 = fbm_ruido(p + vec3<f32>(t, t * 0.5, 0.0), 4);
-    let plasma2 = fbm_ruido(p * 2.0 - vec3<f32>(t * 0.7, t * 1.1, t * 0.3), 3);
-    let plasma3 = fbm_ruido(p * 0.5 + vec3<f32>(cos(t * 0.5), sin(t * 0.5), t * 0.2), 3);
+    // Sistema de plasma multicapa con más variación
+    let plasma1 = fbm_ruido(p + vec3<f32>(t, t * 0.5, 0.0), 5);
+    let plasma2 = fbm_ruido(p * 2.0 - vec3<f32>(t * 0.7, t * 1.1, t * 0.3), 4);
+    let plasma3 = fbm_ruido(p * 0.5 + vec3<f32>(cos(t * 0.5), sin(t * 0.5), t * 0.2), 4);
+    let plasma4 = fbm_ruido(p * 4.0 + vec3<f32>(t * 0.3, t * 0.8, 0.0), 3);
     
-    let combinado = clamp((plasma1 * 0.5 + plasma2 * 0.3 + plasma3 * 0.2), 0.0, 1.0);
+    let combinado = clamp((plasma1 * 0.4 + plasma2 * 0.3 + plasma3 * 0.2 + plasma4 * 0.1), 0.0, 1.0);
     
     // Vórtices espirales
     let angulo = atan2(p.y, p.x);
@@ -191,32 +192,43 @@ fn shader_sol(pos: vec3<f32>, t: f32) -> vec3<f32> {
 fn shader_rocoso(pos: vec3<f32>, t: f32) -> vec3<f32> {
     let p = pos * 5.0;
     
-    // Generación de terreno con Voronoi
+    // Generación de terreno más compleja con Voronoi
     let continentes = patron_voronoi(p * 0.8);
-    let montanas = fbm_ruido(p * 3.0, 2) * 0.3;
-    let altura_terreno = continentes * 0.7 + montanas * 0.3;
+    let montanas = fbm_ruido(p * 3.0, 3) * 0.3;
+    let detalles_finos = fbm_ruido(p * 8.0, 2) * 0.15;
+    let altura_terreno = continentes * 0.55 + montanas * 0.3 + detalles_finos * 0.15;
     
     var color_terreno: vec3<f32>;
     
-    // Paleta de colores tipo Marte
+    // Paleta de colores tipo Marte más variada
     if (altura_terreno < 0.35) {
-        // Planicies bajas (óxido de hierro)
-        color_terreno = vec3<f32>(0.8, 0.3, 0.1);
+        // Planicies bajas con variación
+        let var_planicies = fbm_ruido(p * 6.0, 2);
+        if (var_planicies > 0.6) {
+            color_terreno = vec3<f32>(0.85, 0.35, 0.15); // Rojo óxido claro
+        } else {
+            color_terreno = vec3<f32>(0.7, 0.25, 0.1);   // Rojo óxido oscuro
+        }
     } else if (altura_terreno >= 0.65) {
         // Casquetes polares de hielo
         color_terreno = vec3<f32>(0.95, 0.95, 1.0);
     } else if (altura_terreno >= 0.55) {
-        // Montañas (roca oscura)
-        color_terreno = vec3<f32>(0.6, 0.2, 0.1);
-    } else {
-        // Terreno variado
-        let variacion = fbm_ruido(p * 5.0, 2);
-        if (variacion > 0.6) {
-            color_terreno = vec3<f32>(0.7, 0.3, 0.1);   // Rojo claro
-        } else if (variacion > 0.4) {
-            color_terreno = vec3<f32>(0.5, 0.2, 0.1);   // Rojo medio
+        // Montañas con más detalle
+        let roca_var = fbm_ruido(p * 10.0, 2);
+        if (roca_var > 0.5) {
+            color_terreno = vec3<f32>(0.65, 0.22, 0.12); // Roca marrón-rojo
         } else {
-            color_terreno = vec3<f32>(0.4, 0.15, 0.1);  // Rojo oscuro
+            color_terreno = vec3<f32>(0.5, 0.18, 0.09);  // Roca oscura
+        }
+    } else {
+        // Terreno variado con más texturas
+        let veg = fbm_ruido(p * 5.0, 3);
+        if (veg > 0.65) {
+            color_terreno = vec3<f32>(0.75, 0.32, 0.12); // Rojo claro arenoso
+        } else if (veg > 0.4) {
+            color_terreno = vec3<f32>(0.6, 0.22, 0.11);  // Rojo medio
+        } else {
+            color_terreno = vec3<f32>(0.45, 0.16, 0.09); // Rojo muy oscuro
         }
     }
 
@@ -311,6 +323,10 @@ fn shader_anillos(pos: vec3<f32>, t: f32) -> vec3<f32> {
         let bandas_anillo = sin(freq_anillos) * 0.5 + 0.5;
         let var_brillo = sin(dist_anillo * 30.0 + t * 3.0) * 0.5 + 0.5;
         
+        // Textura adicional en los anillos
+        let textura_anillos = fbm_ruido(vec3<f32>(dist_anillo * 20.0, p.y * 50.0, t * 0.5), 3);
+        let bandas_ajustadas = bandas_anillo * 0.7 + textura_anillos * 0.3;
+        
         // Gaps de Cassini (divisiones oscuras)
         let es_gap = (dist_anillo > 1.0 && dist_anillo < 1.15) ||
                      (dist_anillo > 1.5 && dist_anillo < 1.55) ||
@@ -320,9 +336,9 @@ fn shader_anillos(pos: vec3<f32>, t: f32) -> vec3<f32> {
             color_planeta *= 0.4;
         } else {
             var color_anillo: vec3<f32>;
-            if (bandas_anillo > 0.7) {
+            if (bandas_ajustadas > 0.7) {
                 color_anillo = vec3<f32>(1.0, 0.9, 0.6);  // Dorado claro
-            } else if (bandas_anillo > 0.4) {
+            } else if (bandas_ajustadas > 0.4) {
                 color_anillo = vec3<f32>(0.95, 0.7, 0.8); // Rosa dorado
             } else {
                 color_anillo = vec3<f32>(0.8, 0.5, 0.6);  // Rosa oscuro
@@ -403,15 +419,27 @@ fn shader_luna(pos: vec3<f32>) -> vec3<f32> {
     
     var color_superficie: vec3<f32>;
     
-    // Paleta de hielo
+    // Paleta de hielo con más variación
     if (es_crater) {
-        color_superficie = vec3<f32>(0.7, 0.8, 0.9);   // Hielo agrietado
+        // Cráteres con grietas
+        let grietas = fbm_ruido(p * 15.0, 2);
+        if (grietas > 0.6) {
+            color_superficie = vec3<f32>(0.65, 0.75, 0.85); // Hielo agrietado claro
+        } else {
+            color_superficie = vec3<f32>(0.7, 0.8, 0.9);    // Hielo agrietado
+        }
     } else if (es_mar) {
         color_superficie = vec3<f32>(0.5, 0.7, 0.8);   // Hielo azulado
     } else if (es_tierras_altas) {
         color_superficie = vec3<f32>(0.9, 0.95, 1.0);  // Hielo brillante
     } else {
-        color_superficie = vec3<f32>(0.8, 0.9, 0.95);  // Hielo base
+        // Hielo base con variación
+        let variacion_hielo = fbm_ruido(p * 6.0, 2);
+        if (variacion_hielo > 0.5) {
+            color_superficie = vec3<f32>(0.85, 0.92, 0.97); // Hielo claro
+        } else {
+            color_superficie = vec3<f32>(0.75, 0.85, 0.92); // Hielo medio
+        }
     }
     
     return color_superficie;

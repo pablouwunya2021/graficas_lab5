@@ -13,7 +13,7 @@ use winit::{
     window::Window,
 };
 use std::sync::Arc;
-use nalgebra_glm::{Vec3, Vec4, Mat4};
+use nalgebra_glm::{Vec3, Mat4};
 use std::fmt;
 
 // =============================================================================
@@ -430,6 +430,8 @@ struct EstadoAplicacion {
     datos_uniformes: DatosUniformes,
     rotacion_camara: [f32; 2],
     tiempo_inicio: std::time::Instant,
+    posicion_mouse: Option<winit::dpi::PhysicalPosition<f64>>,
+    mouse_presionado: bool,
 }
 
 impl EstadoAplicacion {
@@ -608,6 +610,8 @@ impl EstadoAplicacion {
             datos_uniformes,
             rotacion_camara: [0.0, 0.0],
             tiempo_inicio: std::time::Instant::now(),
+            posicion_mouse: None,
+            mouse_presionado: false,
         }
     }
 
@@ -624,26 +628,23 @@ impl EstadoAplicacion {
         }
     }
 
-    fn procesar_entrada(&mut self, evento: &KeyEvent) -> bool {
-        match evento.physical_key {
-            PhysicalKey::Code(KeyCode::ArrowLeft) => {
-                self.rotacion_camara[0] -= 0.1;
-                true
+    fn procesar_mouse_click(&mut self, presionado: bool) {
+        self.mouse_presionado = presionado;
+    }
+
+    fn procesar_movimiento_mouse(&mut self, posicion: winit::dpi::PhysicalPosition<f64>) {
+        if self.mouse_presionado {
+            if let Some(pos_anterior) = self.posicion_mouse {
+                let delta_x = (posicion.x - pos_anterior.x) as f32;
+                let delta_y = (posicion.y - pos_anterior.y) as f32;
+                
+                // Sensibilidad del mouse
+                self.rotacion_camara[0] += delta_x * 0.005;
+                self.rotacion_camara[1] = (self.rotacion_camara[1] - delta_y * 0.005)
+                    .clamp(-1.5, 1.5);
             }
-            PhysicalKey::Code(KeyCode::ArrowRight) => {
-                self.rotacion_camara[0] += 0.1;
-                true
-            }
-            PhysicalKey::Code(KeyCode::ArrowUp) => {
-                self.rotacion_camara[1] = (self.rotacion_camara[1] + 0.1).min(1.5);
-                true
-            }
-            PhysicalKey::Code(KeyCode::ArrowDown) => {
-                self.rotacion_camara[1] = (self.rotacion_camara[1] - 0.1).max(-1.5);
-                true
-            }
-            _ => false,
         }
+        self.posicion_mouse = Some(posicion);
     }
 
     fn actualizar(&mut self) {
@@ -670,12 +671,10 @@ impl EstadoAplicacion {
         // Configuración: [posición_x, posición_y, escala, tipo_shader]
         // Tipos: 1=Sol, 2=Rocoso(Marte), 3=Gaseoso(Júpiter), 4=Anillos(Saturno), 5=Volcánico, 6=Luna(Hielo)
         let configuracion_planetas = [
-            [0.0, 0.0, 0.5, 1.0],      // Centro: Sol (más grande, amarillo-azul)
-            [-0.5, 0.4, 0.15, 2.0],    // Izq arriba: Marte (rojo)
-            [-0.7, -0.3, 0.25, 3.0],   // Izq abajo: Júpiter (grande, bandas)
-            [0.65, 0.25, 0.35, 4.0],   // Der arriba: Saturno (con anillos verdes)
-            [0.5, -0.35, 0.08, 5.0],   // Der centro: Volcánico (pequeño, lava cyan)
-            [0.2, -0.65, 0.18, 6.0],   // Abajo: Luna helada (azul-blanco)
+            [0.0, 0.0, 0.55, 1.0],      // Centro: Sol (amarillo-naranja brillante)
+            [-0.6, 0.35, 0.12, 2.0],    // Izq arriba: Marte (pequeño, rojo)
+            [0.65, -0.25, 0.38, 4.0],   // Der abajo: Saturno (grande con anillos)
+            [-0.3, -0.5, 0.18, 6.0],    // Izq abajo: Luna helada (azul-blanco)
         ];
 
         let datos_planetas: Vec<_> = configuracion_planetas
@@ -717,9 +716,9 @@ impl EstadoAplicacion {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.01,
-                            g: 0.01,
-                            b: 0.03,
+                            r: 0.05,
+                            g: 0.08,
+                            b: 0.15,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -803,7 +802,7 @@ fn main() {
     println!("Autor: Pablo Cabrera - Carné: 231156");
     println!("===========================================");
     println!("Controles:");
-    println!("  Flechas: Rotar cámara");
+    println!("  Click y arrastra: Rotar cámara");
     println!("  ESC: Salir");
     println!("===========================================");
 
@@ -827,8 +826,11 @@ fn main() {
                     WindowEvent::Resized(tamano_fisico) => {
                         estado.redimensionar(*tamano_fisico);
                     }
-                    WindowEvent::KeyboardInput { event, .. } => {
-                        estado.procesar_entrada(event);
+                    WindowEvent::CursorMoved { position, .. } => {
+                        estado.procesar_movimiento_mouse(*position);
+                    }
+                    WindowEvent::MouseInput { state: mouse_state, button: winit::event::MouseButton::Left, .. } => {
+                        estado.procesar_mouse_click(*mouse_state == ElementState::Pressed);
                     }
                     WindowEvent::RedrawRequested => {
                         estado.actualizar();
